@@ -57,3 +57,15 @@ void __btd_enable_debug(struct btd_debug_desc *start,
 	if (__btd_debug_desc.flags & BTD_DEBUG_FLAG_PRINT) \
 		btd_debug("%s:%s() " fmt,  __FILE__, __FUNCTION__ , ## arg); \
 } while (0)
+
+/**
+ * INFO:
+ * @fmt: format string
+ * @arg...: list of arguments
+ *
+ * Simple macro around info() which also include the function
+ * name it is called in.
+ */
+#define INFO(fmt, arg...) do { \
+		info("%s:%s() " fmt,  __FILE__, __FUNCTION__ , ## arg); \
+} while (0)
