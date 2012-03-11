@@ -214,7 +214,7 @@ endif
 
 if GATTMODULES
 builtin_modules += thermometer alert time gatt_example proximity \
-			deviceinfo
+			deviceinfo batterystate
 builtin_sources += thermometer/main.c \
 			thermometer/manager.h thermometer/manager.c \
 			thermometer/thermometer.h thermometer/thermometer.c \
@@ -226,7 +226,10 @@ builtin_sources += thermometer/main.c \
 			proximity/reporter.h proximity/reporter.c \
 			deviceinfo/main.c \
 			deviceinfo/manager.h deviceinfo/manager.c \
-			deviceinfo/deviceinfo.h deviceinfo/deviceinfo.c
+			deviceinfo/deviceinfo.h deviceinfo/deviceinfo.c \
+			batterystate/main.c \
+			batterystate/manager.h batterystate/manager.c \
+			batterystate/batterystate.h batterystate/batterystate.c
 endif
 
 builtin_modules += hciops mgmtops
