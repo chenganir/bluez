@@ -213,7 +213,8 @@ builtin_sources += health/hdp_main.c health/hdp_types.h \
 endif
 
 if GATTMODULES
-builtin_modules += thermometer alert time gatt_example proximity
+builtin_modules += thermometer alert time gatt_example proximity \
+			deviceinfo
 builtin_sources += thermometer/main.c \
 			thermometer/manager.h thermometer/manager.c \
 			thermometer/thermometer.h thermometer/thermometer.c \
@@ -222,9 +223,11 @@ builtin_sources += thermometer/main.c \
             plugins/gatt-example.c \
             proximity/main.c proximity/manager.h proximity/manager.c \
 			proximity/monitor.h proximity/monitor.c \
-			proximity/reporter.h proximity/reporter.c
+			proximity/reporter.h proximity/reporter.c \
+			deviceinfo/main.c \
+			deviceinfo/manager.h deviceinfo/manager.c \
+			deviceinfo/deviceinfo.h deviceinfo/deviceinfo.c
 endif
-
 
 builtin_modules += hciops mgmtops
 builtin_sources += plugins/hciops.c plugins/mgmtops.c
