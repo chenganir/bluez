@@ -120,3 +120,6 @@ int device_block(DBusConnection *conn, struct btd_device *device,
 						gboolean update_only);
 int device_unblock(DBusConnection *conn, struct btd_device *device,
 					gboolean silent, gboolean update_only);
+
+void device_set_deviceinfo_pnpid(struct btd_device *device, uint8_t vendor_id_src,
+					uint16_t vendor_id, uint16_t product_id, uint16_t product_ver);

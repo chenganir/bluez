@@ -125,6 +125,17 @@ struct att_callbacks {
 	gpointer user_data;
 };
 
+#define DEVICEINFO_PNPID	0x01
+
+struct btd_deviceinfo{
+	uint8_t		vendor_id_src;
+	uint16_t	vendor_id;
+	uint16_t	product_id;
+	uint16_t	product_ver;
+	uint16_t    di_mask;
+
+};
+
 struct btd_device {
 	bdaddr_t	bdaddr;
 	addr_type_t	type;
@@ -169,6 +180,8 @@ struct btd_device {
 
 	GIOChannel      *att_io;
 	guint		cleanup_id;
+
+	struct btd_deviceinfo di;
 };
 
 static uint16_t uuid_list[] = {
@@ -2994,4 +3007,14 @@ gboolean btd_device_remove_attio_callback(struct btd_device *device, guint id)
 	att_cleanup(device);
 
 	return TRUE;
+}
+
+void device_set_deviceinfo_pnpid(struct btd_device *device, uint8_t vendor_id_src,
+					uint16_t vendor_id, uint16_t product_id, uint16_t product_ver)
+{
+	device->di.vendor_id_src = vendor_id_src;
+	device->di.vendor_id = vendor_id;
+	device->di.product_id = product_id;
+	device->di.product_ver = product_ver;
+	device->di.di_mask |= DEVICEINFO_PNPID;
 }
