@@ -19,6 +19,5 @@
  *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
-
-int batterystate_register(struct btd_device *device);
+int batterystate_register(struct btd_device *device, struct gatt_primary *prim);
 void batterystate_unregister(struct btd_device *device);

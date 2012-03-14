@@ -29,16 +29,28 @@
 
 #include "adapter.h"
 #include "device.h"
+#include "gattrib.h"
+#include "attio.h"
 #include "att.h"
 #include "gattrib.h"
 #include "gatt.h"
 #include "batterystate.h"
+#include "log.h"
 
 struct battery {
 	struct btd_device	*dev;		/* Device reference */
+	GAttrib			*attrib;	/* GATT connection */
+	guint			attioid;	/* Att watcher id */
+	struct att_range	*svc_range;	/* Battery range */
+	GSList			*chars;		/* Characteristics */
 };
 
 static GSList *servers = NULL;
+
+struct characteristic {
+	struct gatt_char	attr;	/* Characteristic */
+	struct battery		*batt;	/* Parent Battery Service */
+};
 
 static gint cmp_device(gconstpointer a, gconstpointer b)
 {
@@ -55,20 +67,82 @@ static void batterystate_free(gpointer user_data)
 {
 	struct battery *batt = user_data;
 
+	if (batt->attioid > 0)
+		btd_device_remove_attio_callback(batt->dev, batt->attioid);
+
+	if (batt->attrib != NULL)
+		g_attrib_unref(batt->attrib);
+
+	if (batt->chars != NULL)
+		g_slist_free_full(batt->chars, g_free);
+
 	btd_device_unref(batt->dev);
 	g_free(batt);
 }
 
+static void configure_batterystate_cb(GSList *characteristics, guint8 status,
+							gpointer user_data)
+{
+	struct battery *batt = user_data;
+	GSList *l;
 
-int batterystate_register(struct btd_device *device)
+	if (status != 0) {
+		error("Discover batterystate characteristics: %s",
+							att_ecode2str(status));
+		return;
+	}
+
+	for (l = characteristics; l; l = l->next) {
+		struct gatt_char *c = l->data;
+		struct characteristic *ch;
+
+		ch = g_new0(struct characteristic, 1);
+		ch->attr.handle = c->handle;
+		ch->attr.properties = c->properties;
+		ch->attr.value_handle = c->value_handle;
+		memcpy(ch->attr.uuid, c->uuid, MAX_LEN_UUID_STR + 1);
+		ch->batt = batt;
+
+		batt->chars = g_slist_append(batt->chars, ch);
+	}
+}
+
+static void attio_connected_cb(GAttrib *attrib, gpointer user_data)
+{
+	struct battery *batt = user_data;
+
+	batt->attrib = g_attrib_ref(attrib);
+
+	gatt_discover_char(batt->attrib, batt->svc_range->start,
+					batt->svc_range->end, NULL,
+					configure_batterystate_cb, batt);
+
+}
+
+static void attio_disconnected_cb(gpointer user_data)
+{
+	struct battery *batt = user_data;
+
+	g_attrib_unref(batt->attrib);
+	batt->attrib = NULL;
+}
+
+int batterystate_register(struct btd_device *device, struct gatt_primary *prim)
 {
 	struct battery *batt;
 
 	batt = g_new0(struct battery, 1);
 	batt->dev = btd_device_ref(device);
 
+	batt->svc_range = g_new0(struct att_range, 1);
+	batt->svc_range->start = prim->range.start;
+	batt->svc_range->end = prim->range.end;
+
 	servers = g_slist_prepend(servers, batt);
 
+	batt->attioid = btd_device_add_attio_callback(device,
+				attio_connected_cb, attio_disconnected_cb,
+				batt);
 	return 0;
 }
 

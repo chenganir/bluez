@@ -34,9 +34,29 @@
 
 #define BATTERY_SERVICE_UUID		"0000180f-0000-1000-8000-00805f9b34fb"
 
+static gint primary_uuid_cmp(gconstpointer a, gconstpointer b)
+{
+	const struct gatt_primary *prim = a;
+	const char *uuid = b;
+
+	return g_strcmp0(prim->uuid, uuid);
+}
+
 static int batterystate_driver_probe(struct btd_device *device, GSList *uuids)
 {
-	return batterystate_register(device);
+	struct gatt_primary *prim;
+	GSList *primaries, *l;
+
+	primaries = btd_device_get_primaries(device);
+
+	l = g_slist_find_custom(primaries, BATTERY_SERVICE_UUID,
+							primary_uuid_cmp);
+	if (l == NULL)
+		return -EINVAL;
+
+	prim = l->data;
+
+	return batterystate_register(device, prim);
 }
 
 static void batterystate_driver_remove(struct btd_device *device)
