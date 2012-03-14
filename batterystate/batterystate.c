@@ -29,11 +29,16 @@
 
 #include "adapter.h"
 #include "device.h"
+#include "gattrib.h"
+#include "attio.h"
 #include "att.h"
+#include "gatt.h"
 #include "batterystate.h"
 
 struct batterystate {
 	struct btd_device	*dev;		/* Device reference */
+	GAttrib			*attrib;		/* GATT connection */
+	guint			attioid;		/* Att watcher id */
 };
 
 static GSList *batteryservices = NULL;
@@ -53,10 +58,30 @@ static void batterystate_free(gpointer user_data)
 {
 	struct batterystate *bs = user_data;
 
+	if (bs->attioid > 0)
+		btd_device_remove_attio_callback(bs->dev, bs->attioid);
+
+	if (bs->attrib != NULL)
+		g_attrib_unref(bs->attrib);
+
 	btd_device_unref(bs->dev);
 	g_free(bs);
 }
 
+static void attio_connected_cb(GAttrib *attrib, gpointer user_data)
+{
+	struct batterystate *bs = user_data;
+
+	bs->attrib = g_attrib_ref(attrib);
+}
+
+static void attio_disconnected_cb(gpointer user_data)
+{
+	struct batterystate *bs = user_data;
+
+	g_attrib_unref(bs->attrib);
+	bs->attrib = NULL;
+}
 
 int batterystate_register(struct btd_device *device, struct att_primary *dattr)
 {
@@ -67,6 +92,8 @@ int batterystate_register(struct btd_device *device, struct att_primary *dattr)
 
 	batteryservices = g_slist_prepend(batteryservices, bs);
 
+	bs->attioid = btd_device_add_attio_callback(device, attio_connected_cb,
+						attio_disconnected_cb, bs);
 	return 0;
 }
 
