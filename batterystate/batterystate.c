@@ -40,7 +40,7 @@ struct batterystate {
 	struct btd_device	*dev;		/* Device reference */
 	GAttrib			*attrib;		/* GATT connection */
 	guint			attioid;		/* Att watcher id */
-	struct att_range	*svc_range;	/* DeviceInfo range */
+	struct att_range	*svc_range;	/* Battery Service range */
 	GSList			*chars;		/* Characteristics */
 };
 
@@ -48,7 +48,14 @@ static GSList *batteryservices = NULL;
 
 struct characteristic {
 	struct att_char			attr;	/* Characteristic */
-	struct batterystate		*bs;		/* deviceinfo where the char belongs */
+	struct batterystate		*bs;		/* batterystate where the char belongs */
+	GSList			*desc;			/* Descriptors */
+};
+
+struct descriptor {
+	struct characteristic	*ch;
+	uint16_t		handle;
+	bt_uuid_t		uuid;
 };
 
 static void char_free(gpointer user_data)
@@ -87,6 +94,45 @@ static void batterystate_free(gpointer user_data)
 	g_free(bs);
 }
 
+static void discover_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
+							gpointer user_data)
+{
+	struct characteristic *ch = user_data;
+	struct att_data_list *list;
+	uint8_t format;
+	int i;
+
+	if (status != 0) {
+		error("Discover all characteristic descriptors failed [%s]: %s",
+					ch->attr.uuid, att_ecode2str(status));
+		return;
+	}
+
+	list = dec_find_info_resp(pdu, len, &format);
+	if (list == NULL)
+		return;
+
+	for (i = 0; i < list->num; i++) {
+		struct descriptor *desc;
+		uint8_t *value;
+
+		value = list->data[i];
+		desc = g_new0(struct descriptor, 1);
+		desc->handle = att_get_u16(value);
+		desc->ch = ch;
+
+		if (format == 0x01)
+			desc->uuid = att_get_uuid16(&value[2]);
+		else
+			desc->uuid = att_get_uuid128(&value[2]);
+
+		ch->desc = g_slist_append(ch->desc, desc);
+	}
+
+	att_data_list_free(list);
+}
+
+
 static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 							gpointer user_data)
 {
@@ -124,6 +170,8 @@ static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 			end = bs->svc_range->end;
 		else
 			continue;
+
+		gatt_find_info(bs->attrib, start, end, discover_desc_cb, ch);
 	}
 }
 
