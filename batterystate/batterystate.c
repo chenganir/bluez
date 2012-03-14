@@ -36,10 +36,13 @@
 #include "batterystate.h"
 #include "log.h"
 
+#define BATTERY_LEVEL_UUID		                "00002a19-0000-1000-8000-00805f9b34fb"
+
 struct batterystate {
 	struct btd_device	*dev;		/* Device reference */
 	GAttrib			*attrib;		/* GATT connection */
 	guint			attioid;		/* Att watcher id */
+	guint			attnotid;	/* Att notifications id */
 	struct att_range	*svc_range;	/* DeviceInfo range */
 	GSList			*chars;		/* Characteristics */
 };
@@ -76,6 +79,14 @@ static gint cmp_device(gconstpointer a, gconstpointer b)
 	return -1;
 }
 
+static gint cmp_char_val_handle(gconstpointer a, gconstpointer b)
+{
+	const struct characteristic *ch = a;
+	const uint16_t *handle = b;
+
+	return ch->attr.value_handle - *handle;
+}
+
 static void batterystate_free(gpointer user_data)
 {
 	struct batterystate *bs = user_data;
@@ -86,6 +97,9 @@ static void batterystate_free(gpointer user_data)
 	if (bs->attrib != NULL)
 		g_attrib_unref(bs->attrib);
 
+	if (bs->attnotid > 0)
+		g_attrib_unregister(bs->attrib, bs->attnotid);
+
 	if (bs->chars != NULL)
 		g_slist_free_full(bs->chars, char_free);
 
@@ -93,6 +107,122 @@ static void batterystate_free(gpointer user_data)
 	g_free(bs->svc_range);
 	g_free(bs);
 }
+
+static void read_batterylevel_cb(guint8 status, const guint8 *pdu, guint16 len,
+							gpointer user_data)
+{
+	uint8_t value[ATT_MAX_MTU];
+	int vlen;
+
+	if (status != 0) {
+		DBG("value read failed: %s",
+							att_ecode2str(status));
+		return;
+	}
+
+	if (!dec_read_resp(pdu, len, value, &vlen)) {
+		DBG("Protocol error\n");
+		return;
+	}
+
+	if (vlen < 1) {
+		DBG("Invalid batterylevel received");
+		return;
+	}
+}
+
+static void process_batteryservice_char(struct characteristic *ch)
+{
+	if (g_strcmp0(ch->attr.uuid, BATTERY_LEVEL_UUID) == 0) {
+		gatt_read_char(ch->d->attrib, ch->attr.value_handle, 0,
+							read_batterylevel_cb, ch);
+		return;
+	}
+}
+
+static void batterylevel_cb(guint8 status, const guint8 *pdu,
+						guint16 len, gpointer user_data)
+{
+	char *msg = user_data;
+
+	if (status != 0)
+		error("%s failed", msg);
+
+	g_free(msg);
+}
+
+static void batterylevel_presentation_format_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
+							gpointer user_data)
+{
+	uint8_t value[ATT_MAX_MTU];
+	uint16_t description;
+	uint8_t  namespace;
+
+	int vlen;
+
+	if (status != 0) {
+		DBG("Presentation Format descriptor read failed: %s",
+							att_ecode2str(status));
+		return;
+	}
+
+	if (!dec_read_resp(pdu, len, value, &vlen)) {
+		DBG("Protocol error\n");
+		return;
+	}
+
+	if (vlen < 7) {
+		DBG("Invalid range received");
+		return;
+	}
+
+	namespace = value[4];
+	description = att_get_u16(&value[5]);
+}
+
+
+static void process_batterylevel_desc(struct descriptor *desc)
+{
+	struct characteristic *ch = desc->ch;
+	char uuidstr[MAX_LEN_UUID_STR];
+	bt_uuid_t btuuid;
+
+	bt_uuid16_create(&btuuid, GATT_CLIENT_CHARAC_CFG_UUID);
+
+	if (bt_uuid_cmp(&desc->uuid, &btuuid) == 0) {
+		uint8_t atval[2];
+		uint16_t val;
+		char *msg;
+
+		if (g_strcmp0(ch->attr.uuid,
+					BATTERY_LEVEL_UUID) == 0) {
+
+			val = ATT_CLIENT_CHAR_CONF_NOTIFICATION;
+			msg = g_strdup("Enable BatteryLevel notification");
+		} else
+			goto done;
+
+		att_put_u16(val, atval);
+		gatt_write_char(ch->d->attrib, desc->handle, atval, 2,
+							batterylevel_cb, msg);
+		return;
+	}
+
+	bt_uuid16_create(&btuuid, GATT_CHARAC_FMT_UUID);
+
+	if (bt_uuid_cmp(&desc->uuid, &btuuid) == 0 && g_strcmp0(ch->attr.uuid,
+					BATTERY_LEVEL_UUID) == 0) {
+		gatt_read_char(ch->d->attrib, desc->handle, 0,
+						batterylevel_presentation_format_desc_cb, desc);
+		return;
+	}
+
+done:
+	bt_uuid_to_string(&desc->uuid, uuidstr, MAX_LEN_UUID_STR);
+	DBG("Ignored descriptor %s in characteristic %s", uuidstr,
+								ch->attr.uuid);
+}
+
 
 static void discover_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
 							gpointer user_data)
@@ -127,6 +257,7 @@ static void discover_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
 			desc->uuid = att_get_uuid128(&value[2]);
 
 		ch->desc = g_slist_append(ch->desc, desc);
+		process_batterylevel_desc(desc);
 	}
 
 	att_data_list_free(list);
@@ -159,6 +290,8 @@ static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 
 		bs->chars = g_slist_append(bs->chars, ch);
 
+		process_batteryservice_char(ch);
+
 		start = c->value_handle + 1;
 
 		if (l->next != NULL) {
@@ -175,11 +308,44 @@ static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 	}
 }
 
+static void proc_batterylevel(struct batterystate *bs, const uint8_t *pdu,
+						uint16_t len, gboolean final)
+{
+}
+
+static void notif_handler(const uint8_t *pdu, uint16_t len, gpointer user_data)
+{
+	struct batterystate *bs = user_data;
+	const struct characteristic *ch;
+	uint16_t handle;
+	GSList *l;
+
+	if (len < 3) {
+		DBG("Bad pdu received");
+		return;
+	}
+
+	handle = att_get_u16(&pdu[1]);
+	l = g_slist_find_custom(bs->chars, &handle, cmp_char_val_handle);
+	if (l == NULL) {
+		DBG("Unexpected handle: 0x%04x", handle);
+		return;
+	}
+
+	ch = l->data;
+	if (g_strcmp0(ch->attr.uuid, BATTERY_LEVEL_UUID) == 0) {
+		proc_batterylevel(bs, pdu, len, FALSE);
+	}
+}
+
 static void attio_connected_cb(GAttrib *attrib, gpointer user_data)
 {
 	struct batterystate *bs = user_data;
 
 	bs->attrib = g_attrib_ref(attrib);
+
+	bs->attnotid = g_attrib_register(bs->attrib, ATT_OP_HANDLE_NOTIFY,
+							notif_handler, bs, NULL);
 
 	gatt_discover_char(bs->attrib, bs->svc_range->start, bs->svc_range->end,
 					NULL, configure_batterystate_cb, bs);
