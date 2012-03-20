@@ -1,0 +1,34 @@
+BlueZ D-Bus Battery API description
+****************************************
+
+	Texas Instruments, Inc. <chen.ganir@ti.com>
+
+Battery Service hierarchy
+=====================================
+
+Service		org.bluez
+Interface	org.bluez.Battery
+Object path	[variable prefix]/{hci0,hci1,...}/dev_XX_XX_XX_XX_XX_XX/BATTYYYY
+
+
+Methods	dict GetProperties()
+
+			Returns all properties for the interface. See the
+			Properties section for the available properties.
+
+Properties	byte Namespace [readonly]
+
+			Namespace value from the battery format characteristic
+			descriptor.Combined with Description provides a unique
+			battery identifyer if multiple batteries are supported.
+
+		uint16 Description [readonly]
+
+			Description value from the battery format characteristic
+			descriptor. Combined with Namespace provides a unique
+			battery identifyer if multiple batteries are supported.
+
+		byte Level [readonly]
+
+			Battery level (0-100).		
+

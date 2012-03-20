@@ -20,5 +20,5 @@
  *
  */
 
-int batterystate_manager_init(void);
+int batterystate_manager_init(DBusConnection *conn);
 void batterystate_manager_exit(void);

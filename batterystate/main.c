@@ -25,13 +25,15 @@
 #endif
 
 #include <stdint.h>
-#include <glib.h>
+#include <gdbus.h>
 #include <errno.h>
 
 #include "hcid.h"
 #include "plugin.h"
 #include "manager.h"
 #include "log.h"
+
+static DBusConnection *connection = NULL;
 
 static int batterystate_init(void)
 {
@@ -40,12 +42,24 @@ static int batterystate_init(void)
 		return -ENOTSUP;
 	}
 
-	return batterystate_manager_init();
+	connection = dbus_bus_get(DBUS_BUS_SYSTEM, NULL);
+	if (connection == NULL)
+		return -EIO;
+
+	if (batterystate_manager_init(connection) < 0) {
+		dbus_connection_unref(connection);
+		return -EIO;
+	}
+
+	return 0;
 }
 
 static void batterystate_exit(void)
 {
 	batterystate_manager_exit();
+
+	dbus_connection_unref(connection);
+	connection = NULL;
 }
 
 BLUETOOTH_PLUGIN_DEFINE(batterystate, VERSION,

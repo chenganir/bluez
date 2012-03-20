@@ -24,7 +24,9 @@
 #include <config.h>
 #endif
 
-#include <glib.h>
+#include <gdbus.h>
+#include <errno.h>
+#include <dbus/dbus.h>
 #include <bluetooth/uuid.h>
 
 #include "adapter.h"
@@ -34,12 +36,16 @@
 #include "att.h"
 #include "gattrib.h"
 #include "gatt.h"
+#include "dbus-common.h"
 #include "batterystate.h"
 #include "log.h"
+
+#define BATTERY_INTERFACE	"org.bluez.Battery"
 
 #define BATTERY_LEVEL_UUID	"00002a19-0000-1000-8000-00805f9b34fb"
 
 struct battery {
+	DBusConnection		*conn;		/* The connection to the bus */
 	struct btd_device	*dev;		/* Device reference */
 	GAttrib			*attrib;	/* GATT connection */
 	guint			attioid;	/* Att watcher id */
@@ -50,6 +56,7 @@ struct battery {
 static GSList *servers = NULL;
 
 struct characteristic {
+	char			*path;		/* object path */
 	struct gatt_char	attr;		/* Characteristic */
 	struct battery		*batt;		/* Parent Battery Service */
 	GSList			*desc;		/* Descriptors */
@@ -70,7 +77,18 @@ static void char_free(gpointer user_data)
 
 	g_slist_free_full(c->desc, g_free);
 
+	g_free(c->path);
+
 	g_free(c);
+}
+
+static void char_interface_free(gpointer user_data)
+{
+	struct characteristic *c = user_data;
+	device_remove_battery(c->batt->dev, c->path);
+
+	g_dbus_unregister_interface(c->batt->conn,
+			device_get_path(c->batt->dev), BATTERY_INTERFACE);
 }
 
 static gint cmp_device(gconstpointer a, gconstpointer b)
@@ -95,9 +113,12 @@ static void batterystate_free(gpointer user_data)
 		g_attrib_unref(batt->attrib);
 
 	if (batt->chars != NULL)
-		g_slist_free_full(batt->chars, char_free);
+		g_slist_free_full(batt->chars, char_interface_free);
+
+	dbus_connection_unref(batt->conn);
 
 	btd_device_unref(batt->dev);
+	g_free(batt->svc_range);
 	g_free(batt);
 }
 
@@ -188,6 +209,42 @@ static void discover_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
 	att_data_list_free(list);
 }
 
+static DBusMessage *get_properties(DBusConnection *conn, DBusMessage *msg,
+								void *data)
+{
+	struct characteristic *c = data;
+	DBusMessageIter iter;
+	DBusMessageIter dict;
+	DBusMessage *reply;
+
+	reply = dbus_message_new_method_return(msg);
+	if (reply == NULL)
+		return NULL;
+
+	dbus_message_iter_init_append(reply, &iter);
+
+	dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY,
+			DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING
+			DBUS_TYPE_STRING_AS_STRING DBUS_TYPE_VARIANT_AS_STRING
+			DBUS_DICT_ENTRY_END_CHAR_AS_STRING, &dict);
+
+	dict_append_entry(&dict, "Namespace", DBUS_TYPE_BYTE, &c->ns);
+
+	dict_append_entry(&dict, "Description", DBUS_TYPE_UINT16,
+							&c->description);
+
+	dict_append_entry(&dict, "Level", DBUS_TYPE_BYTE, &c->level);
+
+	dbus_message_iter_close_container(&iter, &dict);
+
+	return reply;
+}
+
+static GDBusMethodTable battery_methods[] = {
+	{ "GetProperties",	"",	"a{sv}",	get_properties },
+	{ }
+};
+
 
 static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 							gpointer user_data)
@@ -214,6 +271,20 @@ static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 			ch->attr.value_handle = c->value_handle;
 			memcpy(ch->attr.uuid, c->uuid, MAX_LEN_UUID_STR + 1);
 			ch->batt = batt;
+			ch->path = g_strdup_printf("%s/BATT%04X",
+						device_get_path(batt->dev),
+						g_slist_length(servers));
+
+			device_add_battery(batt->dev, ch->path);
+
+			if (!g_dbus_register_interface(batt->conn, ch->path,
+						BATTERY_INTERFACE,
+						battery_methods, NULL, NULL,
+						ch, char_free)) {
+				error("D-Bus register interface %s failed",
+							BATTERY_INTERFACE);
+				continue;
+			}
 
 			batt->chars = g_slist_append(batt->chars, ch);
 
@@ -255,13 +326,14 @@ static void attio_disconnected_cb(gpointer user_data)
 	batt->attrib = NULL;
 }
 
-int batterystate_register(struct btd_device *device, struct gatt_primary *prim)
+int batterystate_register(DBusConnection *connection, struct btd_device *device,
+						struct gatt_primary *prim)
 {
 	struct battery *batt;
 
 	batt = g_new0(struct battery, 1);
 	batt->dev = btd_device_ref(device);
-
+	batt->conn = dbus_connection_ref(connection);
 	batt->svc_range = g_new0(struct att_range, 1);
 	batt->svc_range->start = prim->range.start;
 	batt->svc_range->end = prim->range.end;
@@ -271,6 +343,7 @@ int batterystate_register(struct btd_device *device, struct gatt_primary *prim)
 	batt->attioid = btd_device_add_attio_callback(device,
 				attio_connected_cb, attio_disconnected_cb,
 				batt);
+
 	return 0;
 }
 
