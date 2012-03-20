@@ -122,6 +122,39 @@ static void batterystate_free(gpointer user_data)
 	g_free(batt);
 }
 
+static void read_batterylevel_cb(guint8 status, const guint8 *pdu, guint16 len,
+							gpointer user_data)
+{
+	struct characteristic *ch = user_data;
+	uint8_t value[ATT_MAX_MTU];
+	int vlen;
+
+	if (status != 0) {
+		error("Failed to read Battery Level:%s", att_ecode2str(status));
+		return;
+	}
+
+	if (!dec_read_resp(pdu, len, value, &vlen)) {
+		error("Failed to read Battery Level: Protocol error\n");
+		return;
+	}
+
+	if (vlen < 1) {
+		error("Failed to read Battery Level: Wrong pdu len");
+		return;
+	}
+
+	ch->batt->level = value[0];
+}
+
+static void process_batteryservice_char(struct characteristic *ch)
+{
+	if (g_strcmp0(ch->attr.uuid, BATTERY_LEVEL_UUID) == 0) {
+		gatt_read_char(ch->batt->attrib, ch->attr.value_handle, 0,
+						read_batterylevel_cb, ch);
+	}
+}
+
 static void batterylevel_presentation_format_desc_cb(guint8 status,
 						const guint8 *pdu, guint16 len,
 						gpointer user_data)
@@ -287,6 +320,7 @@ static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 			}
 
 			batt->chars = g_slist_append(batt->chars, ch);
+			process_batteryservice_char(ch);
 
 			start = c->value_handle + 1;
 
