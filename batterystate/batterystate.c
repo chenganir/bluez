@@ -36,12 +36,17 @@
 #include "batterystate.h"
 #include "log.h"
 
+#define BATTERY_LEVEL_UUID		                "00002a19-0000-1000-8000-00805f9b34fb"
+
 struct batterystate {
 	struct btd_device	*dev;		/* Device reference */
 	GAttrib			*attrib;		/* GATT connection */
 	guint			attioid;		/* Att watcher id */
 	struct att_range	*svc_range;	/* Battery Service range */
 	GSList			*chars;		/* Characteristics */
+	uint8_t 		ns;				/* Battery Namespace */
+	uint16_t		description;	/* Battery desciption */
+	uint8_t			level;			/* Battery last known level */
 };
 
 static GSList *batteryservices = NULL;
@@ -94,6 +99,55 @@ static void batterystate_free(gpointer user_data)
 	g_free(bs);
 }
 
+static void batterylevel_presentation_format_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
+							gpointer user_data)
+{
+	struct descriptor *desc = user_data;
+	uint8_t value[ATT_MAX_MTU];
+	int vlen;
+
+	if (status != 0) {
+		DBG("Presentation Format descriptor read failed: %s",
+							att_ecode2str(status));
+		return;
+	}
+
+	if (!dec_read_resp(pdu, len, value, &vlen)) {
+		error("Protocol error\n");
+		return;
+	}
+
+	if (vlen < 7) {
+		error("Invalid range received");
+		return;
+	}
+
+	desc->ch->bs->ns = value[4];
+	desc->ch->bs->description = att_get_u16(&value[5]);
+}
+
+
+static void process_batterylevel_desc(struct descriptor *desc)
+{
+	struct characteristic *ch = desc->ch;
+	char uuidstr[MAX_LEN_UUID_STR];
+	bt_uuid_t btuuid;
+
+	bt_uuid16_create(&btuuid, GATT_CHARAC_FMT_UUID);
+
+	if (bt_uuid_cmp(&desc->uuid, &btuuid) == 0 && g_strcmp0(ch->attr.uuid,
+					BATTERY_LEVEL_UUID) == 0) {
+		gatt_read_char(ch->bs->attrib, desc->handle, 0,
+						batterylevel_presentation_format_desc_cb, desc);
+		return;
+	}
+
+	bt_uuid_to_string(&desc->uuid, uuidstr, MAX_LEN_UUID_STR);
+	DBG("Ignored descriptor %s in characteristic %s", uuidstr,
+								ch->attr.uuid);
+}
+
+
 static void discover_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
 							gpointer user_data)
 {
@@ -127,6 +181,7 @@ static void discover_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
 			desc->uuid = att_get_uuid128(&value[2]);
 
 		ch->desc = g_slist_append(ch->desc, desc);
+		process_batterylevel_desc(desc);
 	}
 
 	att_data_list_free(list);
