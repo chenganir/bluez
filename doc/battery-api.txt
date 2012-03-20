@@ -21,6 +21,11 @@ Signals		PropertyChanged(string name, variant value)
 			This signal indicates a changed value of the given
 			property.
 
+Signals		PropertyChanged(string name, variant value)
+
+			This signal indicates a changed value of the given
+			property.
+
 Properties	byte Namespace [readonly]
 
 			Namespace value from the battery format characteristic

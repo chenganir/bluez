@@ -50,6 +50,7 @@ struct batterystate {
 	GAttrib			*attrib;		/* GATT connection */
 	guint			attioid;		/* Att watcher id */
 	struct att_range	*svc_range;	/* Battery Service range */
+	guint			attnotid;	/* Att notifications id */
 	GSList			*chars;		/* Characteristics */
 	uint8_t 		ns;				/* Battery Namespace */
 	uint16_t		description;	/* Battery desciption */
@@ -88,6 +89,14 @@ static gint cmp_device(gconstpointer a, gconstpointer b)
 	return -1;
 }
 
+static gint cmp_char_val_handle(gconstpointer a, gconstpointer b)
+{
+	const struct characteristic *ch = a;
+	const uint16_t *handle = b;
+
+	return ch->attr.value_handle - *handle;
+}
+
 static void batterystate_free(gpointer user_data)
 {
 	struct batterystate *bs = user_data;
@@ -97,6 +106,9 @@ static void batterystate_free(gpointer user_data)
 
 	if (bs->attrib != NULL)
 		g_attrib_unref(bs->attrib);
+
+	if (bs->attnotid > 0)
+		g_attrib_unregister(bs->attrib, bs->attnotid);
 
 	if (bs->chars != NULL)
 		g_slist_free_full(bs->chars, char_free);
@@ -144,6 +156,17 @@ static void process_batteryservice_char(struct characteristic *ch)
 	}
 }
 
+static void batterylevel_enable_notify_cb(guint8 status, const guint8 *pdu,
+						guint16 len, gpointer user_data)
+{
+	char *msg = user_data;
+
+	if (status != 0)
+		error("%s failed", msg);
+
+	g_free(msg);
+}
+
 static void batterylevel_presentation_format_desc_cb(guint8 status, const guint8 *pdu, guint16 len,
 							gpointer user_data)
 {
@@ -177,6 +200,23 @@ static void process_batterylevel_desc(struct descriptor *desc)
 	struct characteristic *ch = desc->ch;
 	char uuidstr[MAX_LEN_UUID_STR];
 	bt_uuid_t btuuid;
+
+	bt_uuid16_create(&btuuid, GATT_CLIENT_CHARAC_CFG_UUID);
+
+	if (bt_uuid_cmp(&desc->uuid, &btuuid) == 0 && g_strcmp0(ch->attr.uuid,
+					BATTERY_LEVEL_UUID) == 0) {
+		uint8_t atval[2];
+		uint16_t val;
+		char *msg;
+
+		val = ATT_CLIENT_CHAR_CONF_NOTIFICATION;
+		msg = g_strdup("Enable BatteryLevel notification");
+
+		att_put_u16(val, atval);
+		gatt_write_char(ch->bs->attrib, desc->handle, atval, 2,
+							batterylevel_enable_notify_cb, msg);
+		return;
+	}
 
 	bt_uuid16_create(&btuuid, GATT_CHARAC_FMT_UUID);
 
@@ -277,6 +317,37 @@ static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 	}
 }
 
+static void emit_battery_level_changed(struct batterystate *bs)
+{
+	emit_property_changed(bs->conn,bs->path,
+			BATTERY_INTERFACE,"Level",
+			DBUS_TYPE_BYTE,&bs->level);
+}
+
+static void proc_batterylevel(struct batterystate *bs, const uint8_t *pdu,
+						uint16_t len, gboolean final)
+{
+	uint8_t new_batt_level = 0;
+	gboolean changed = FALSE;
+
+	if (!pdu) {
+		error ("Invalid pdu length");
+		goto done;
+	}
+
+	new_batt_level = pdu[1];
+
+	if (new_batt_level != bs->level)
+		changed = TRUE;
+
+	bs->level = new_batt_level;
+
+done:
+	if (changed) {
+		emit_battery_level_changed(bs);
+	}
+}
+
 static DBusMessage *get_properties(DBusConnection *conn, DBusMessage *msg,
 								void *data)
 {
@@ -316,11 +387,44 @@ static GDBusMethodTable battery_methods[] = {
 	{ }
 };
 
+static GDBusSignalTable battery_signals[] = {
+	{ "PropertyChanged",	"sv"	},
+	{ }
+};
+
+static void notif_handler(const uint8_t *pdu, uint16_t len, gpointer user_data)
+{
+	struct batterystate *bs = user_data;
+	const struct characteristic *ch;
+	uint16_t handle;
+	GSList *l;
+
+	if (len < 3) {
+		error("Bad pdu received");
+		return;
+	}
+
+	handle = att_get_u16(&pdu[1]);
+	l = g_slist_find_custom(bs->chars, &handle, cmp_char_val_handle);
+	if (l == NULL) {
+		error("Unexpected handle: 0x%04x", handle);
+		return;
+	}
+
+	ch = l->data;
+	if (g_strcmp0(ch->attr.uuid, BATTERY_LEVEL_UUID) == 0) {
+		proc_batterylevel(bs, pdu, len, FALSE);
+	}
+}
+
 static void attio_connected_cb(GAttrib *attrib, gpointer user_data)
 {
 	struct batterystate *bs = user_data;
 
 	bs->attrib = g_attrib_ref(attrib);
+
+	bs->attnotid = g_attrib_register(bs->attrib, ATT_OP_HANDLE_NOTIFY,
+							notif_handler, bs, NULL);
 
 	gatt_discover_char(bs->attrib, bs->svc_range->start, bs->svc_range->end,
 					NULL, configure_batterystate_cb, bs);
@@ -354,7 +458,7 @@ int batterystate_register(DBusConnection *connection, struct btd_device *device,
 	device_add_battery(device,bs->path);
 
 	if (!g_dbus_register_interface(bs->conn, bs->path, BATTERY_INTERFACE,
-				battery_methods, NULL,
+				battery_methods, battery_signals,
 				NULL, bs, batterystate_free)) {
 		error("D-Bus failed to register %s interface",
 							BATTERY_INTERFACE);
