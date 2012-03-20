@@ -20,5 +20,6 @@
  *
  */
 
-int batterystate_register(struct btd_device *device, struct att_primary *tattr);
+int batterystate_register(DBusConnection *conn, struct btd_device *device,
+					struct att_primary *dattr);
 void batterystate_unregister(struct btd_device *device);

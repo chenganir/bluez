@@ -20,7 +20,7 @@
  *
  */
 
-#include <glib.h>
+#include <gdbus.h>
 #include <errno.h>
 #include <bluetooth/uuid.h>
 
@@ -31,6 +31,8 @@
 #include "manager.h"
 
 #define BATTERY_SERVICE_UUID		"0000180f-0000-1000-8000-00805f9b34fb"
+
+static DBusConnection *connection = NULL;
 
 static gint primary_uuid_cmp(gconstpointer a, gconstpointer b)
 {
@@ -54,7 +56,7 @@ static int batterystate_driver_probe(struct btd_device *device, GSList *uuids)
 
 	prim = l->data;
 
-	return batterystate_register(device, prim);
+	return batterystate_register(connection, device, prim);
 }
 
 static void batterystate_driver_remove(struct btd_device *device)
@@ -69,12 +71,21 @@ static struct btd_device_driver batterystate_device_driver = {
 	.remove	= batterystate_driver_remove
 };
 
-int batterystate_manager_init(void)
+int batterystate_manager_init(DBusConnection *conn)
 {
-	return btd_register_device_driver(&batterystate_device_driver);
+	int ret;
+	ret = btd_register_device_driver(&batterystate_device_driver);
+	if (ret < 0)
+		return ret;
+
+	connection = dbus_connection_ref(conn);
+	return 0;
 }
 
 void batterystate_manager_exit(void)
 {
 	btd_unregister_device_driver(&batterystate_device_driver);
+
+	dbus_connection_unref(connection);
+	connection = NULL;
 }

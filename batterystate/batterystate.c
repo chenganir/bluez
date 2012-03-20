@@ -24,7 +24,9 @@
 #include <config.h>
 #endif
 
-#include <glib.h>
+#include <gdbus.h>
+#include <errno.h>
+#include <dbus/dbus.h>
 #include <bluetooth/uuid.h>
 
 #include "adapter.h"
@@ -33,12 +35,17 @@
 #include "attio.h"
 #include "att.h"
 #include "gatt.h"
+#include "dbus-common.h"
 #include "batterystate.h"
 #include "log.h"
+
+#define BATTERY_INTERFACE "org.bluez.Battery"
 
 #define BATTERY_LEVEL_UUID		                "00002a19-0000-1000-8000-00805f9b34fb"
 
 struct batterystate {
+	DBusConnection		*conn;		/* The connection to the bus */
+	char				*path;		/* object path */
 	struct btd_device	*dev;		/* Device reference */
 	GAttrib			*attrib;		/* GATT connection */
 	guint			attioid;		/* Att watcher id */
@@ -93,6 +100,9 @@ static void batterystate_free(gpointer user_data)
 
 	if (bs->chars != NULL)
 		g_slist_free_full(bs->chars, char_free);
+
+	if (bs->path != NULL)
+		g_free(bs->path);
 
 	btd_device_unref(bs->dev);
 	g_free(bs->svc_range);
@@ -230,6 +240,45 @@ static void configure_batterystate_cb(GSList *characteristics, guint8 status,
 	}
 }
 
+static DBusMessage *get_properties(DBusConnection *conn, DBusMessage *msg,
+								void *data)
+{
+
+	struct batterystate *bs = data;
+	DBusMessageIter iter;
+	DBusMessageIter dict;
+	DBusMessage *reply;
+
+	reply = dbus_message_new_method_return(msg);
+	if (reply == NULL)
+		return NULL;
+
+	dbus_message_iter_init_append(reply, &iter);
+
+	dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY,
+			DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING
+			DBUS_TYPE_STRING_AS_STRING DBUS_TYPE_VARIANT_AS_STRING
+			DBUS_DICT_ENTRY_END_CHAR_AS_STRING, &dict);
+
+	dict_append_entry(&dict, "Namespace", DBUS_TYPE_BYTE,
+							&bs->ns);
+
+	dict_append_entry(&dict, "Description", DBUS_TYPE_UINT16,
+							&bs->description);
+
+	dict_append_entry(&dict, "Level", DBUS_TYPE_BYTE,
+							&bs->level);
+
+	dbus_message_iter_close_container(&iter, &dict);
+
+	return reply;
+}
+
+static GDBusMethodTable battery_methods[] = {
+	{ "GetProperties",	"",	"a{sv}",	get_properties },
+	{ }
+};
+
 static void attio_connected_cb(GAttrib *attrib, gpointer user_data)
 {
 	struct batterystate *bs = user_data;
@@ -249,21 +298,41 @@ static void attio_disconnected_cb(gpointer user_data)
 	bs->attrib = NULL;
 }
 
-int batterystate_register(struct btd_device *device, struct att_primary *dattr)
+int batterystate_register(DBusConnection *connection, struct btd_device *device,
+					struct att_primary *dattr)
 {
 	struct batterystate *bs;
+	const gchar *device_path = device_get_path(device);
+	int err = 0;
 
 	bs = g_new0(struct batterystate, 1);
+	bs->conn = dbus_connection_ref(connection);
 	bs->dev = btd_device_ref(device);
 	bs->svc_range = g_new0(struct att_range, 1);
 	bs->svc_range->start = dattr->start;
 	bs->svc_range->end = dattr->end;
 
+	bs->path = g_strdup_printf("%s/BATT%04X", device_path, g_slist_length(batteryservices));
+
+	device_add_battery(device,bs->path);
+
+	if (!g_dbus_register_interface(bs->conn, bs->path, BATTERY_INTERFACE,
+				battery_methods, NULL,
+				NULL, bs, batterystate_free)) {
+		error("D-Bus failed to register %s interface",
+							BATTERY_INTERFACE);
+		batterystate_free(bs);
+		err = -EIO;
+		goto done;
+	}
+
 	batteryservices = g_slist_prepend(batteryservices, bs);
 
 	bs->attioid = btd_device_add_attio_callback(device, attio_connected_cb,
 						attio_disconnected_cb, bs);
-	return 0;
+
+done:
+	return err;
 }
 
 void batterystate_unregister(struct btd_device *device)
@@ -278,5 +347,8 @@ void batterystate_unregister(struct btd_device *device)
 	bs = l->data;
 	batteryservices = g_slist_remove(batteryservices, bs);
 
-	batterystate_free(bs);
+	device_remove_battery(device, bs->path);
+
+	g_dbus_unregister_interface(bs->conn, device_get_path(bs->dev),
+							BATTERY_INTERFACE);
 }
