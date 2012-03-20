@@ -123,3 +123,5 @@ int device_unblock(DBusConnection *conn, struct btd_device *device,
 					gboolean silent, gboolean update_only);
 void device_set_pnpid(struct btd_device *device, uint8_t vendor_id_src,
 					uint16_t vendor_id, uint16_t product_id, uint16_t product_ver);
+void device_add_battery(struct btd_device *device, char *path);
+void device_remove_battery(struct btd_device *device, char *path);

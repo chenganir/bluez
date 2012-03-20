@@ -125,6 +125,10 @@ struct att_callbacks {
 	gpointer user_data;
 };
 
+struct btd_battery {
+	char* path;
+};
+
 struct btd_device {
 	bdaddr_t	bdaddr;
 	addr_type_t	type;
@@ -170,6 +174,8 @@ struct btd_device {
 
 	GIOChannel      *att_io;
 	guint		cleanup_id;
+
+	GSList *batteries;
 };
 
 static uint16_t uuid_list[] = {
@@ -260,6 +266,7 @@ static void device_free(gpointer user_data)
 	g_slist_free_full(device->primaries, g_free);
 	g_slist_free_full(device->attios, g_free);
 	g_slist_free_full(device->attios_offline, g_free);
+	g_slist_free_full(device->batteries, g_free);
 
 	att_cleanup(device);
 
@@ -426,6 +433,15 @@ static DBusMessage *get_properties(DBusConnection *conn,
 	/* Adapter */
 	ptr = adapter_get_path(adapter);
 	dict_append_entry(&dict, "Adapter", DBUS_TYPE_OBJECT_PATH, &ptr);
+
+	/* Batteries */
+	str = g_new0(char *, g_slist_length(device->batteries) + 1);
+	for (i = 0, l = device->batteries; l; l = l->next, i++) {
+		struct btd_battery *b = l->data;
+		str[i] = b->path;
+	}
+	dict_append_array(&dict, "Batteries", DBUS_TYPE_OBJECT_PATH, &str, i);
+	g_free(str);
 
 	dbus_message_iter_close_container(&iter, &dict);
 
@@ -1206,6 +1222,9 @@ void device_remove(struct btd_device *device, gboolean remove_stored)
 	device->drivers = NULL;
 
 	attrib_client_unregister(device->services);
+
+	g_slist_free(device->batteries);
+	device->batteries = NULL;
 
 	btd_device_unref(device);
 }
@@ -3027,4 +3046,30 @@ void device_set_pnpid(struct btd_device *device, uint8_t vendor_id_src,
 	device_set_vendor_src(device, vendor_id_src);
 	device_set_product(device, product_id);
 	device_set_version(device, product_ver);
+}
+
+void device_add_battery(struct btd_device *device, char *path)
+{
+	struct btd_battery *batt;
+
+	batt = g_new0(struct btd_battery, 1);
+	batt->path = path;
+	device->batteries = g_slist_append(device->batteries,
+									batt);
+}
+
+void device_remove_battery(struct btd_device *device, char *path)
+{
+	GSList *l;
+
+	for (l = device->batteries; l; l = l->next) {
+		struct btd_battery *b = l->data;
+
+		if (g_strcmp0(path, b->path) == 0) {
+			device->batteries = g_slist_remove(device->batteries,
+							b);
+			g_free(b);
+			return;
+		}
+	}
 }
